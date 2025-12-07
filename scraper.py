@@ -1,0 +1,161 @@
+import requests
+from bs4 import BeautifulSoup
+import psycopg2
+import time
+import random
+from datetime import datetime, timezone
+import os
+
+DB_URL = os.getenv("DB_URL")
+maximum_company_id = 100000  # adjust as needed
+
+def get_db_connection():
+    return psycopg2.connect(DB_URL)
+
+
+def create_tables():
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS spyur (
+        id BIGINT PRIMARY KEY,
+        name TEXT,
+        owner TEXT,
+        address TEXT,
+        phones TEXT[],
+        categories TEXT[],
+        founded_year TEXT,
+        scraped_at TIMESTAMP DEFAULT now()
+    );
+    """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_last_checkpoint():
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT last_id FROM scraper_checkpoint WHERE id = 3;")
+    result = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    return result[0] if result else 0
+
+
+def update_checkpoint(last_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        UPDATE scraper_checkpoint
+        SET last_id=%s, updated_at=%s
+        WHERE id=3;
+    """, (last_id, datetime.utcnow()))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def scrape_company(company_id: int):
+    url = f"https://www.spyur.am/am/companies/{company_id}/"
+    response = requests.get(url)
+
+    if response.status_code != 200:
+        return None  # not found or bad request
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    company_name = soup.select_one(".page_title")
+    owner = soup.select_one(".lead_info.text_block")
+    address = soup.select_one(".address_block")
+    phones = soup.select(".phone_info")
+    categories = soup.select(".info_content *")
+
+ # 🔥 Extract founding year
+    founded_year = None  
+
+    for item in soup.select("ul.info_list li"):
+        title = item.select_one(".inner_subtitle")
+        value = item.select_one(".text_block")
+
+        if title and "Հիմնադրման տարի" in title.get_text(strip=True):
+            founded_year = value.get_text(strip=True).replace("\n", "").strip()
+            break  # stop at first match
+
+    return {
+        "id": company_id,
+        "name": company_name.get_text(strip=True) if company_name else None,
+        "owner": owner.get_text(strip=True) if owner else None,
+        "address": address.get_text(strip=True) if address else None,
+        "phones": list({p.get_text(strip=True) for p in phones}) if phones else [],
+        "categories": list({c.get_text(strip=True) for c in categories}) if categories else [],
+        "founded_year": founded_year
+    }
+
+
+def save_company(data):
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO spyur (id, name, owner, address, phones, categories, founded_year)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (id) DO UPDATE SET
+            name=EXCLUDED.name,
+            owner=EXCLUDED.owner,
+            address=EXCLUDED.address,
+            phones=EXCLUDED.phones,
+            categories=EXCLUDED.categories,
+            founded_year=EXCLUDED.founded_year;
+    """, (
+        data["id"],
+        data["name"],
+        data["owner"],
+        data["address"],
+        data["phones"],
+        data["categories"],
+        data["founded_year"]
+    ))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+from datetime import datetime, timezone
+
+if __name__ == "__main__":
+    create_tables()
+
+    start_id = get_last_checkpoint()
+    print(f"Resuming from {start_id}...")
+
+    for company_id in range(start_id, maximum_company_id):  # adjust range if you want
+        data = scrape_company(company_id)
+
+        if not data or data["name"] == "ՍԽԱ՛Լ Է":
+            print(f"ID {company_id} -> invalid / not found, skipping DB.")
+        else:
+            save_company(data)
+            print(f"Saved: {data['name']} ({company_id})")
+
+        # UPDATED: use timezone-aware UTC datetime
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE scraper_checkpoint
+            SET last_id=%s, updated_at=%s
+            WHERE id=3;
+        """, (company_id, datetime.now(timezone.utc)))
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        time.sleep(random.uniform(0.5, 1.5))
+
