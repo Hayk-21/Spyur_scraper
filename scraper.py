@@ -168,7 +168,7 @@ if __name__ == "__main__":
     while company_id < maximum_company_id:
         company_id = get_last_checkpoint()+1
         data = scrape_company(company_id)
-
+        print(data)
         if not data or data["name"] == "ՍԽԱ՛Լ Է":
             print(f"ID {company_id} -> invalid / not found, skipping DB.")
         else:
