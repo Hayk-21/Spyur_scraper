@@ -20,7 +20,16 @@ HEADERS = {
     "Accept-Language": "hy-AM,ru-RU,en-US;q=0.9,en;q=0.8",
     "Connection": "keep-alive",
     "Referer": "https://www.spyur.am/",
+    "Accept-Encoding": "gzip, deflate, br",
 }
+
+# Optional proxy support (set env var HTTP_PROXY or SPYUR_PROXY)
+PROXY = os.getenv("HTTP_PROXY") or os.getenv("SPYUR_PROXY")
+PROXIES = {"http": PROXY, "https": PROXY} if PROXY else None
+
+# Maintain a session to keep cookies across requests
+session = requests.Session()
+session.headers.update(HEADERS)
 
 def get_db_connection():
     try:
@@ -105,7 +114,7 @@ def scrape_company(company_id: int):
     response = None
     for attempt in range(1, max_retries + 1):
         try:
-            response = requests.get(url, headers=HEADERS, timeout=10)
+            response = session.get(url, timeout=10, proxies=PROXIES)
         except requests.RequestException as e:
             print(f"[HTTP] Request error for ID {company_id}: {e}")
             if attempt == max_retries:
@@ -125,8 +134,24 @@ def scrape_company(company_id: int):
         return {"id": company_id, "status": None}
 
     if response.status_code == 403:
-        print(f"[HTTP] 403 Forbidden for ID {company_id}. Access likely blocked.")
-        return {"id": company_id, "status": 403}
+        print(f"[HTTP] 403 Forbidden for ID {company_id}. Trying Cloudflare-aware fallback...")
+        # Attempt Cloudflare bypass using cloudscraper
+        try:
+            import cloudscraper
+            scraper = cloudscraper.create_scraper()
+            scraper.headers.update(HEADERS)
+            cf_resp = scraper.get(url, timeout=15, proxies=PROXIES)
+            if cf_resp.status_code == 200:
+                response = cf_resp
+            else:
+                print(f"[HTTP] Cloudflare fallback status {cf_resp.status_code} for ID {company_id}.")
+                return {"id": company_id, "status": 403}
+        except ImportError:
+            print("[HTTP] cloudscraper not installed; cannot attempt Cloudflare bypass.")
+            return {"id": company_id, "status": 403}
+        except Exception as e:
+            print(f"[HTTP] Cloudflare bypass error for ID {company_id}: {e}")
+            return {"id": company_id, "status": 403}
     if response.status_code == 404:
         print(f"[HTTP] 404 Not Found for ID {company_id}.")
         return {"id": company_id, "status": 404}
@@ -200,6 +225,13 @@ def save_company(data):
 from datetime import datetime, timezone
 
 if __name__ == "__main__":
+    # Warm up session by visiting homepage to obtain cookies
+    try:
+        home = session.get("https://www.spyur.am/", timeout=10, proxies=PROXIES)
+        print(f"[HTTP] Warm-up homepage status: {home.status_code}")
+    except Exception as e:
+        print(f"[HTTP] Warm-up failed: {e}")
+
     create_tables()
 
     company_id = get_last_checkpoint()
