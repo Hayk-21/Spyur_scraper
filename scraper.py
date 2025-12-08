@@ -9,6 +9,19 @@ import os
 DB_URL = os.getenv("DB_URL")
 maximum_company_id = 100000  # adjust as needed
 
+# HTTP headers to identify as a regular browser
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "hy-AM,ru-RU,en-US;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
+    "Referer": "https://www.spyur.am/",
+}
+
 def get_db_connection():
     try:
         if not DB_URL:
@@ -84,11 +97,42 @@ def update_checkpoint(last_id):
 def scrape_company(company_id: int):
     url = f"https://www.spyur.am/am/companies/{company_id}/"
 
-    
-    response = requests.get(url, timeout=10)
-    print(response)
+    # Basic retry for transient errors
+    transient_statuses = {429, 500, 502, 503, 504}
+    max_retries = 3
+    backoff = 1.0
+
+    response = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=10)
+        except requests.RequestException as e:
+            print(f"[HTTP] Request error for ID {company_id}: {e}")
+            if attempt == max_retries:
+                return {"id": company_id, "status": None, "error": str(e)}
+            time.sleep(backoff)
+            backoff *= 2
+            continue
+
+        if response.status_code in transient_statuses and attempt < max_retries:
+            print(f"[HTTP] {response.status_code} for ID {company_id}, retry {attempt}/{max_retries}...")
+            time.sleep(backoff)
+            backoff *= 2
+            continue
+        break
+
+    if response is None:
+        return {"id": company_id, "status": None}
+
+    if response.status_code == 403:
+        print(f"[HTTP] 403 Forbidden for ID {company_id}. Access likely blocked.")
+        return {"id": company_id, "status": 403}
+    if response.status_code == 404:
+        print(f"[HTTP] 404 Not Found for ID {company_id}.")
+        return {"id": company_id, "status": 404}
     if response.status_code != 200:
-        return None  # not found or bad request
+        print(f"[HTTP] {response.status_code} for ID {company_id}.")
+        return {"id": company_id, "status": response.status_code}
 
     soup = BeautifulSoup(response.text, "html.parser")
 
@@ -111,6 +155,7 @@ def scrape_company(company_id: int):
 
     return {
         "id": company_id,
+        "status": 200,
         "name": company_name.get_text(strip=True) if company_name else None,
         "owner": owner.get_text(strip=True) if owner else None,
         "address": address.get_text(strip=True) if address else None,
@@ -163,9 +208,16 @@ if __name__ == "__main__":
     while company_id < maximum_company_id:
         company_id = get_last_checkpoint()+1
         data = scrape_company(company_id)
-        print(data)
-        if not data or data["name"] == "ՍԽԱ՛Լ Է":
-            print(f"ID {company_id} -> invalid / not found, skipping DB.")
+        status = data.get("status") if isinstance(data, dict) else None
+
+        if status == 403:
+            print(f"ID {company_id} -> access blocked (403), skipping.")
+        elif status == 404:
+            print(f"ID {company_id} -> not found (404), skipping.")
+        elif status and status != 200:
+            print(f"ID {company_id} -> HTTP {status}, skipping.")
+        elif not data or data.get("name") == "ՍԽԱ՛Լ Է":
+            print(f"ID {company_id} -> invalid page content, skipping DB.")
         else:
             save_company(data)
             print(f"Saved: {data['name']} ({company_id})")
