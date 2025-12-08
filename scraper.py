@@ -10,11 +10,24 @@ DB_URL = os.getenv("DB_URL")
 maximum_company_id = 100000  # adjust as needed
 
 def get_db_connection():
-    return psycopg2.connect(DB_URL)
+    try:
+        if not DB_URL:
+            print("[DB] Error: DB_URL environment variable is not set.")
+            return None
+        return psycopg2.connect(DB_URL)
+    except psycopg2.OperationalError as e:
+        print(f"[DB] OperationalError while connecting: {e}")
+        return None
+    except Exception as e:
+        print(f"[DB] Unexpected error while connecting: {e}")
+        return None
 
 
 def create_tables():
     conn = get_db_connection()
+    if conn is None:
+        print("[DB] create_tables skipped due to connection error.")
+        return
     cur = conn.cursor()
 
     cur.execute("""
@@ -37,6 +50,9 @@ def create_tables():
 
 def get_last_checkpoint():
     conn = get_db_connection()
+    if conn is None:
+        print("[DB] get_last_checkpoint failed: no DB connection.")
+        return 0
     cur = conn.cursor()
 
     cur.execute("SELECT last_id FROM scraper_checkpoint WHERE id = 3;")
@@ -49,6 +65,9 @@ def get_last_checkpoint():
 
 def update_checkpoint(last_id):
     conn = get_db_connection()
+    if conn is None:
+        print("[DB] update_checkpoint skipped: no DB connection.")
+        return
     cur = conn.cursor()
 
     cur.execute("""
@@ -71,7 +90,7 @@ def scrape_company(company_id: int):
                   "Chrome/120.0.0.0 Safari/537.36"
     }
 
-    response = requests.get(url, headers=HEADERS, timeout=10)
+    response = requests.get(url, timeout=10)
 
     if response.status_code != 200:
         return None  # not found or bad request
@@ -108,6 +127,9 @@ def scrape_company(company_id: int):
 
 def save_company(data):
     conn = get_db_connection()
+    if conn is None:
+        print("[DB] save_company skipped: no DB connection.")
+        return
     cur = conn.cursor()
 
     cur.execute("""
@@ -140,10 +162,11 @@ from datetime import datetime, timezone
 if __name__ == "__main__":
     create_tables()
 
-    start_id = get_last_checkpoint()
-    print(f"Resuming from {start_id}...")
+    company_id = get_last_checkpoint()
+    print(f"Resuming from {company_id}...")
 
-    for company_id in range(start_id, maximum_company_id):  # adjust range if you want
+    while company_id < maximum_company_id:
+        company_id = get_last_checkpoint()+1
         data = scrape_company(company_id)
 
         if not data or data["name"] == "ՍԽԱ՛Լ Է":
@@ -154,6 +177,10 @@ if __name__ == "__main__":
 
         # UPDATED: use timezone-aware UTC datetime
         conn = get_db_connection()
+        if conn is None:
+            print("[DB] Checkpoint update skipped: no DB connection.")
+            time.sleep(random.uniform(0.5, 1.5))
+            continue
         cur = conn.cursor()
         cur.execute("""
             UPDATE scraper_checkpoint
