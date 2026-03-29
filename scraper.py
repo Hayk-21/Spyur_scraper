@@ -83,7 +83,7 @@ def update_checkpoint(last_id):
 def scrape_company(company_id: int):
     url = f"https://www.spyur.am/en/companies/{company_id}/"
     response = _http.get(url, timeout=60)
-    print("response: ", response.status_code)
+    print("response: ", response.status_code, "company_id", company_id)
     if response.status_code != 200:
         return None  # not found or bad request
 
