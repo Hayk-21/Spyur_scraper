@@ -2,6 +2,3 @@ requests
 beautifulsoup4
 psycopg2-binary
 cloudscraper
-requests
-beautifulsoup4
-psycopg2-binary

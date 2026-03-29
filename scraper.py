@@ -1,4 +1,4 @@
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 import psycopg2
 import time
@@ -10,6 +10,32 @@ import os
 DB_URL = "postgresql://neondb_owner:npg_jY8oIh0trUwX@ep-misty-paper-adycpb8w-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 maximum_company_id = 100000  # adjust as needed
+
+# Plain requests looks like a bot (403). cloudscraper mimics a browser / clears simple challenges.
+_http = cloudscraper.create_scraper(
+    browser={"browser": "chrome", "platform": "windows", "mobile": False}
+)
+_http.headers.update(
+    {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,image/apng,*/*;q=0.8"
+        ),
+        "Accept-Language": "en-US,en;q=0.9,hy;q=0.8",
+        "Referer": "https://www.spyur.am/en/companies/",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+    }
+)
+
 
 def get_db_connection():
     return psycopg2.connect(DB_URL)
@@ -66,7 +92,7 @@ def update_checkpoint(last_id):
 
 def scrape_company(company_id: int):
     url = f"https://www.spyur.am/en/companies/{company_id}/"
-    response = requests.get(url)
+    response = _http.get(url, timeout=60)
     print("response: ", response.status_code)
     if response.status_code != 200:
         return None  # not found or bad request
@@ -128,8 +154,6 @@ def save_company(data):
     cur.close()
     conn.close()
 
-
-from datetime import datetime, timezone
 
 if __name__ == "__main__":
     create_tables()
