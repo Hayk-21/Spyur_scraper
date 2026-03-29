@@ -11,6 +11,22 @@ DB_URL = "postgresql://neondb_owner:npg_jY8oIh0trUwX@ep-misty-paper-adycpb8w-poo
 
 maximum_company_id = 100000  # adjust as needed
 
+# Bare requests.get() looks like a script; spyur.am returns 403 without browser-like headers.
+_http = requests.Session()
+_http.headers.update(
+    {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,hy;q=0.8",
+        "Referer": "https://www.spyur.am/",
+        "Upgrade-Insecure-Requests": "1",
+    }
+)
+
 def get_db_connection():
     return psycopg2.connect(DB_URL)
 
@@ -66,7 +82,7 @@ def update_checkpoint(last_id):
 
 def scrape_company(company_id: int):
     url = f"https://www.spyur.am/en/companies/{company_id}/"
-    response = requests.get(url)
+    response = _http.get(url, timeout=60)
     print("response: ", response.status_code)
     if response.status_code != 200:
         return None  # not found or bad request
