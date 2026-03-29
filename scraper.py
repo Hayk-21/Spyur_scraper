@@ -1,4 +1,4 @@
-from curl_cffi import requests as curl_requests
+import requests
 from bs4 import BeautifulSoup
 import psycopg2
 import time
@@ -10,33 +10,6 @@ import os
 DB_URL = "postgresql://neondb_owner:npg_jY8oIh0trUwX@ep-misty-paper-adycpb8w-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 maximum_company_id = 100000  # adjust as needed
-
-# cloudscraper/requests use Python's TLS stack; many WAFs return 403. curl_cffi impersonates Chrome's TLS + HTTP/2.
-_http = curl_requests.Session()
-_IMPERSONATE = "chrome"
-
-_PAGE_HEADERS = {
-    "Accept": (
-        "text/html,application/xhtml+xml,application/xml;q=0.9,"
-        "image/avif,image/webp,image/apng,*/*;q=0.8"
-    ),
-    "Accept-Language": "en-US,en;q=0.9,hy;q=0.8",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-User": "?1",
-}
-
-
-def warmup_http():
-    """Load the English homepage first so cookies / same-origin navigation look real."""
-    _http.get(
-        "https://www.spyur.am/en/",
-        impersonate=_IMPERSONATE,
-        timeout=60,
-        headers={**_PAGE_HEADERS, "Sec-Fetch-Site": "none"},
-    )
-
 
 def get_db_connection():
     return psycopg2.connect(DB_URL)
@@ -92,21 +65,9 @@ def update_checkpoint(last_id):
 
 
 def scrape_company(company_id: int):
-    if company_id < 1:
-        return None
-
     url = f"https://www.spyur.am/en/companies/{company_id}/"
-    response = _http.get(
-        url,
-        impersonate=_IMPERSONATE,
-        timeout=60,
-        headers={
-            **_PAGE_HEADERS,
-            "Referer": "https://www.spyur.am/en/companies/",
-            "Sec-Fetch-Site": "same-origin",
-        },
-    )
-    print("response: ", response.status_code)
+    response = requests.get(url)
+
     if response.status_code != 200:
         return None  # not found or bad request
 
@@ -118,6 +79,7 @@ def scrape_company(company_id: int):
     phones = soup.select(".phone_info")
     categories = soup.select(".info_content *")
 
+ # 🔥 Extract founding year
     founded_year = None  
 
     for item in soup.select("ul.info_list li"):
@@ -168,20 +130,19 @@ def save_company(data):
     conn.close()
 
 
+from datetime import datetime, timezone
+
+from datetime import datetime, timezone
+
 if __name__ == "__main__":
     create_tables()
 
     start_id = get_last_checkpoint()
     print(f"Resuming from {start_id}...")
 
-    try:
-        warmup_http()
-        print("Session warmup OK (homepage).")
-    except Exception as e:
-        print(f"Session warmup failed (continuing anyway): {e}")
-
     for company_id in range(start_id, maximum_company_id):  # adjust range if you want
         data = scrape_company(company_id)
+
         if not data or data["name"] == "ERROR!":
             print(f"ID {company_id} -> invalid / not found, skipping DB.")
         else:
@@ -200,5 +161,5 @@ if __name__ == "__main__":
         cur.close()
         conn.close()
 
-        time.sleep(random.uniform(0.1, 0.2))
+        time.sleep(random.uniform(0.5, 1.5))
 
