@@ -6,54 +6,21 @@ import random
 from datetime import datetime, timezone
 import os
 
-DB_URL = os.getenv("DB_URL")
+# DB_URL = os.getenv("DB_URL")
+DB_URL = "postgresql://neondb_owner:npg_jY8oIh0trUwX@ep-misty-paper-adycpb8w-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+
 maximum_company_id = 100000  # adjust as needed
 
-# HTTP headers to identify as a regular browser
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "hy-AM,ru-RU,en-US;q=0.9,en;q=0.8",
-    "Connection": "keep-alive",
-    "Referer": "https://www.spyur.am/",
-    "Accept-Encoding": "gzip, deflate, br",
-}
-
-# Optional proxy support (set env var HTTP_PROXY or SPYUR_PROXY)
-PROXY = os.getenv("HTTP_PROXY") or os.getenv("SPYUR_PROXY")
-PROXIES = {"http": PROXY, "https": PROXY} if PROXY else None
-
-# Maintain a session to keep cookies across requests
-session = requests.Session()
-session.headers.update(HEADERS)
-
 def get_db_connection():
-    try:
-        if not DB_URL:
-            print("[DB] Error: DB_URL environment variable is not set.")
-            return None
-        return psycopg2.connect(DB_URL)
-    except psycopg2.OperationalError as e:
-        print(f"[DB] OperationalError while connecting: {e}")
-        return None
-    except Exception as e:
-        print(f"[DB] Unexpected error while connecting: {e}")
-        return None
+    return psycopg2.connect(DB_URL)
 
 
 def create_tables():
     conn = get_db_connection()
-    if conn is None:
-        print("[DB] create_tables skipped due to connection error.")
-        return
     cur = conn.cursor()
 
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS spyur (
+    CREATE TABLE IF NOT EXISTS spyur_en (
         id BIGINT PRIMARY KEY,
         name TEXT,
         owner TEXT,
@@ -72,12 +39,9 @@ def create_tables():
 
 def get_last_checkpoint():
     conn = get_db_connection()
-    if conn is None:
-        print("[DB] get_last_checkpoint failed: no DB connection.")
-        return 0
     cur = conn.cursor()
 
-    cur.execute("SELECT last_id FROM scraper_checkpoint WHERE id = 3;")
+    cur.execute("SELECT last_id FROM scraper_checkpoint WHERE id = 4;")
     result = cur.fetchone()
     cur.close()
     conn.close()
@@ -87,15 +51,12 @@ def get_last_checkpoint():
 
 def update_checkpoint(last_id):
     conn = get_db_connection()
-    if conn is None:
-        print("[DB] update_checkpoint skipped: no DB connection.")
-        return
     cur = conn.cursor()
 
     cur.execute("""
         UPDATE scraper_checkpoint
         SET last_id=%s, updated_at=%s
-        WHERE id=3;
+        WHERE id=4;
     """, (last_id, datetime.utcnow()))
 
     conn.commit()
@@ -104,60 +65,11 @@ def update_checkpoint(last_id):
 
 
 def scrape_company(company_id: int):
-    url = f"https://www.spyur.am/am/companies/{company_id}/"
+    url = f"https://www.spyur.am/en/companies/{company_id}/"
+    response = requests.get(url)
 
-    # Basic retry for transient errors
-    transient_statuses = {429, 500, 502, 503, 504}
-    max_retries = 3
-    backoff = 1.0
-
-    response = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = session.get(url, timeout=10, proxies=PROXIES)
-        except requests.RequestException as e:
-            print(f"[HTTP] Request error for ID {company_id}: {e}")
-            if attempt == max_retries:
-                return {"id": company_id, "status": None, "error": str(e)}
-            time.sleep(backoff)
-            backoff *= 2
-            continue
-
-        if response.status_code in transient_statuses and attempt < max_retries:
-            print(f"[HTTP] {response.status_code} for ID {company_id}, retry {attempt}/{max_retries}...")
-            time.sleep(backoff)
-            backoff *= 2
-            continue
-        break
-
-    if response is None:
-        return {"id": company_id, "status": None}
-
-    if response.status_code == 403:
-        print(f"[HTTP] 403 Forbidden for ID {company_id}. Trying Cloudflare-aware fallback...")
-        # Attempt Cloudflare bypass using cloudscraper
-        try:
-            import cloudscraper
-            scraper = cloudscraper.create_scraper()
-            scraper.headers.update(HEADERS)
-            cf_resp = scraper.get(url, timeout=15, proxies=PROXIES)
-            if cf_resp.status_code == 200:
-                response = cf_resp
-            else:
-                print(f"[HTTP] Cloudflare fallback status {cf_resp.status_code} for ID {company_id}.")
-                return {"id": company_id, "status": 403}
-        except ImportError:
-            print("[HTTP] cloudscraper not installed; cannot attempt Cloudflare bypass.")
-            return {"id": company_id, "status": 403}
-        except Exception as e:
-            print(f"[HTTP] Cloudflare bypass error for ID {company_id}: {e}")
-            return {"id": company_id, "status": 403}
-    if response.status_code == 404:
-        print(f"[HTTP] 404 Not Found for ID {company_id}.")
-        return {"id": company_id, "status": 404}
     if response.status_code != 200:
-        print(f"[HTTP] {response.status_code} for ID {company_id}.")
-        return {"id": company_id, "status": response.status_code}
+        return None  # not found or bad request
 
     soup = BeautifulSoup(response.text, "html.parser")
 
@@ -167,20 +79,18 @@ def scrape_company(company_id: int):
     phones = soup.select(".phone_info")
     categories = soup.select(".info_content *")
 
- # 🔥 Extract founding year
     founded_year = None  
 
     for item in soup.select("ul.info_list li"):
         title = item.select_one(".inner_subtitle")
         value = item.select_one(".text_block")
 
-        if title and "Հիմնադրման տարի" in title.get_text(strip=True):
+        if title and "Year established" in title.get_text(strip=True):
             founded_year = value.get_text(strip=True).replace("\n", "").strip()
             break  # stop at first match
 
     return {
         "id": company_id,
-        "status": 200,
         "name": company_name.get_text(strip=True) if company_name else None,
         "owner": owner.get_text(strip=True) if owner else None,
         "address": address.get_text(strip=True) if address else None,
@@ -192,9 +102,6 @@ def scrape_company(company_id: int):
 
 def save_company(data):
     conn = get_db_connection()
-    if conn is None:
-        print("[DB] save_company skipped: no DB connection.")
-        return
     cur = conn.cursor()
 
     cur.execute("""
@@ -225,50 +132,31 @@ def save_company(data):
 from datetime import datetime, timezone
 
 if __name__ == "__main__":
-    # Warm up session by visiting homepage to obtain cookies
-    try:
-        home = session.get("https://www.spyur.am/", timeout=10, proxies=PROXIES)
-        print(f"[HTTP] Warm-up homepage status: {home.status_code}")
-    except Exception as e:
-        print(f"[HTTP] Warm-up failed: {e}")
-
     create_tables()
 
-    company_id = get_last_checkpoint()
-    print(f"Resuming from {company_id}...")
+    start_id = get_last_checkpoint()
+    print(f"Resuming from {start_id}...")
 
-    while company_id < maximum_company_id:
-        company_id = get_last_checkpoint()+1
+    for company_id in range(start_id, maximum_company_id):  # adjust range if you want
         data = scrape_company(company_id)
-        status = data.get("status") if isinstance(data, dict) else None
 
-        if status == 403:
-            print(f"ID {company_id} -> access blocked (403), skipping.")
-        elif status == 404:
-            print(f"ID {company_id} -> not found (404), skipping.")
-        elif status and status != 200:
-            print(f"ID {company_id} -> HTTP {status}, skipping.")
-        elif not data or data.get("name") == "ՍԽԱ՛Լ Է":
-            print(f"ID {company_id} -> invalid page content, skipping DB.")
+        if not data or data["name"] == "ERROR!":
+            print(f"ID {company_id} -> invalid / not found, skipping DB.")
         else:
             save_company(data)
             print(f"Saved: {data['name']} ({company_id})")
 
         # UPDATED: use timezone-aware UTC datetime
         conn = get_db_connection()
-        if conn is None:
-            print("[DB] Checkpoint update skipped: no DB connection.")
-            time.sleep(random.uniform(0.5, 1.5))
-            continue
         cur = conn.cursor()
         cur.execute("""
             UPDATE scraper_checkpoint
             SET last_id=%s, updated_at=%s
-            WHERE id=3;
+            WHERE id=4;
         """, (company_id, datetime.now(timezone.utc)))
         conn.commit()
         cur.close()
         conn.close()
 
-        time.sleep(random.uniform(0.5, 1.5))
+        time.sleep(random.uniform(0.1, 0.2))
 
