@@ -74,6 +74,7 @@ def scrape_company(company_id: int):
     soup = BeautifulSoup(response.text, "html.parser")
 
     company_name = soup.select_one(".page_title")
+    print("company_name: ", company_name)
     owner = soup.select_one(".lead_info.text_block")
     address = soup.select_one(".address_block")
     phones = soup.select(".phone_info")
@@ -139,7 +140,6 @@ if __name__ == "__main__":
 
     for company_id in range(start_id, maximum_company_id):  # adjust range if you want
         data = scrape_company(company_id)
-
         if not data or data["name"] == "ERROR!":
             print(f"ID {company_id} -> invalid / not found, skipping DB.")
         else:
