@@ -6,7 +6,9 @@ import random
 from datetime import datetime, timezone
 import os
 
-DB_URL = os.getenv("DB_URL")
+# DB_URL = os.getenv("DB_URL")
+DB_URL = "postgresql://neondb_owner:npg_jY8oIh0trUwX@ep-misty-paper-adycpb8w-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+
 maximum_company_id = 100000  # adjust as needed
 
 def get_db_connection():
@@ -18,7 +20,7 @@ def create_tables():
     cur = conn.cursor()
 
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS spyur (
+    CREATE TABLE IF NOT EXISTS spyur_en (
         id BIGINT PRIMARY KEY,
         name TEXT,
         owner TEXT,
@@ -39,7 +41,7 @@ def get_last_checkpoint():
     conn = get_db_connection()
     cur = conn.cursor()
 
-    cur.execute("SELECT last_id FROM scraper_checkpoint WHERE id = 3;")
+    cur.execute("SELECT last_id FROM scraper_checkpoint WHERE id = 4;")
     result = cur.fetchone()
     cur.close()
     conn.close()
@@ -54,7 +56,7 @@ def update_checkpoint(last_id):
     cur.execute("""
         UPDATE scraper_checkpoint
         SET last_id=%s, updated_at=%s
-        WHERE id=3;
+        WHERE id=4;
     """, (last_id, datetime.utcnow()))
 
     conn.commit()
@@ -63,15 +65,8 @@ def update_checkpoint(last_id):
 
 
 def scrape_company(company_id: int):
-    url = f"https://www.spyur.am/am/companies/{company_id}/"
-
-    HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/120.0.0.0 Safari/537.36"
-    }
-
-    response = requests.get(url, headers=HEADERS, timeout=10)
+    url = f"https://www.spyur.am/en/companies/{company_id}/"
+    response = requests.get(url)
 
     if response.status_code != 200:
         return None  # not found or bad request
@@ -84,14 +79,13 @@ def scrape_company(company_id: int):
     phones = soup.select(".phone_info")
     categories = soup.select(".info_content *")
 
- # 🔥 Extract founding year
     founded_year = None  
 
     for item in soup.select("ul.info_list li"):
         title = item.select_one(".inner_subtitle")
         value = item.select_one(".text_block")
 
-        if title and "Հիմնադրման տարի" in title.get_text(strip=True):
+        if title and "Year established" in title.get_text(strip=True):
             founded_year = value.get_text(strip=True).replace("\n", "").strip()
             break  # stop at first match
 
@@ -146,7 +140,7 @@ if __name__ == "__main__":
     for company_id in range(start_id, maximum_company_id):  # adjust range if you want
         data = scrape_company(company_id)
 
-        if not data or data["name"] == "ՍԽԱ՛Լ Է":
+        if not data or data["name"] == "ERROR!":
             print(f"ID {company_id} -> invalid / not found, skipping DB.")
         else:
             save_company(data)
@@ -158,11 +152,11 @@ if __name__ == "__main__":
         cur.execute("""
             UPDATE scraper_checkpoint
             SET last_id=%s, updated_at=%s
-            WHERE id=3;
+            WHERE id=4;
         """, (company_id, datetime.now(timezone.utc)))
         conn.commit()
         cur.close()
         conn.close()
 
-        time.sleep(random.uniform(0.5, 1.5))
+        time.sleep(random.uniform(0.1, 0.2))
 
