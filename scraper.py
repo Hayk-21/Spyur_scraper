@@ -1,4 +1,4 @@
-import cloudscraper
+from curl_cffi import requests as curl_requests
 from bs4 import BeautifulSoup
 import psycopg2
 import time
@@ -11,30 +11,31 @@ DB_URL = "postgresql://neondb_owner:npg_jY8oIh0trUwX@ep-misty-paper-adycpb8w-poo
 
 maximum_company_id = 100000  # adjust as needed
 
-# Plain requests looks like a bot (403). cloudscraper mimics a browser / clears simple challenges.
-_http = cloudscraper.create_scraper(
-    browser={"browser": "chrome", "platform": "windows", "mobile": False}
-)
-_http.headers.update(
-    {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/131.0.0.0 Safari/537.36"
-        ),
-        "Accept": (
-            "text/html,application/xhtml+xml,application/xml;q=0.9,"
-            "image/avif,image/webp,image/apng,*/*;q=0.8"
-        ),
-        "Accept-Language": "en-US,en;q=0.9,hy;q=0.8",
-        "Referer": "https://www.spyur.am/en/companies/",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-User": "?1",
-    }
-)
+# cloudscraper/requests use Python's TLS stack; many WAFs return 403. curl_cffi impersonates Chrome's TLS + HTTP/2.
+_http = curl_requests.Session()
+_IMPERSONATE = "chrome"
+
+_PAGE_HEADERS = {
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9,hy;q=0.8",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-User": "?1",
+}
+
+
+def warmup_http():
+    """Load the English homepage first so cookies / same-origin navigation look real."""
+    _http.get(
+        "https://www.spyur.am/en/",
+        impersonate=_IMPERSONATE,
+        timeout=60,
+        headers={**_PAGE_HEADERS, "Sec-Fetch-Site": "none"},
+    )
 
 
 def get_db_connection():
@@ -91,8 +92,20 @@ def update_checkpoint(last_id):
 
 
 def scrape_company(company_id: int):
+    if company_id < 1:
+        return None
+
     url = f"https://www.spyur.am/en/companies/{company_id}/"
-    response = _http.get(url, timeout=60)
+    response = _http.get(
+        url,
+        impersonate=_IMPERSONATE,
+        timeout=60,
+        headers={
+            **_PAGE_HEADERS,
+            "Referer": "https://www.spyur.am/en/companies/",
+            "Sec-Fetch-Site": "same-origin",
+        },
+    )
     print("response: ", response.status_code)
     if response.status_code != 200:
         return None  # not found or bad request
@@ -160,6 +173,12 @@ if __name__ == "__main__":
 
     start_id = get_last_checkpoint()
     print(f"Resuming from {start_id}...")
+
+    try:
+        warmup_http()
+        print("Session warmup OK (homepage).")
+    except Exception as e:
+        print(f"Session warmup failed (continuing anyway): {e}")
 
     for company_id in range(start_id, maximum_company_id):  # adjust range if you want
         data = scrape_company(company_id)

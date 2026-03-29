@@ -1,4 +1,4 @@
 requests
 beautifulsoup4
 psycopg2-binary
-cloudscraper
+curl-cffi>=0.7
