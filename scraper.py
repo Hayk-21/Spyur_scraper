@@ -93,6 +93,14 @@ class ChallengeBlocked(RuntimeError):
 # HTTPS_PROXY) to route through a residential/ISP proxy.
 PROXY_URL = os.getenv("PROXY_URL", "").strip()
 
+# Alternative to a paid proxy: the Cloudflare Worker in worker/ forwards
+# requests from Cloudflare's own network, which spyur.am's Cloudflare accepts.
+# Set both on Railway:
+#   WORKER_PROXY_URL=https://spyur-proxy.<subdomain>.workers.dev
+#   WORKER_PROXY_TOKEN=<the PROXY_TOKEN secret given to the worker>
+WORKER_PROXY_URL = os.getenv("WORKER_PROXY_URL", "").strip().rstrip("/")
+WORKER_PROXY_TOKEN = os.getenv("WORKER_PROXY_TOKEN", "").strip()
+
 _BROWSER_HEADERS = {
     "User-Agent": _BROWSER_UA,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -161,7 +169,20 @@ class Http:
             return True
         return False
 
+    @staticmethod
+    def _route(url: str, params: dict | None) -> tuple[str, dict | None]:
+        """Rewrite the request through the Cloudflare Worker proxy when
+        configured (WORKER_PROXY_URL). Params are folded into the target URL
+        because the worker takes the full URL as a single query param."""
+        if not WORKER_PROXY_URL:
+            return url, params
+        from urllib.parse import urlencode
+
+        target = url + ("?" + urlencode(params) if params else "")
+        return WORKER_PROXY_URL, {"token": WORKER_PROXY_TOKEN, "url": target}
+
     def get(self, url: str, params: dict | None = None):
+        url, params = self._route(url, params)
         network_errors = 0
         while True:
             try:

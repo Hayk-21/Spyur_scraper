@@ -1,0 +1,10 @@
+name = "spyur-proxy"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+# Deploy:
+#   npx wrangler deploy
+#   npx wrangler secret put PROXY_TOKEN   (paste a long random string)
+# The scraper then needs:
+#   WORKER_PROXY_URL=https://spyur-proxy.<your-subdomain>.workers.dev
+#   WORKER_PROXY_TOKEN=<same random string>
