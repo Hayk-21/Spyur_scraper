@@ -2,9 +2,16 @@ name = "spyur-proxy"
 main = "src/index.js"
 compatibility_date = "2026-08-01"
 
+# workers.dev is fronted by Cloudflare's own bot protection, which challenges
+# datacenter IPs (Railway) before the worker even runs. A custom domain on the
+# user's zone avoids that - zone security is under our control.
+routes = [
+  { pattern = "spyur-proxy.dramwise.am", custom_domain = true, zone_name = "dramwise.am" }
+]
+
 # Deploy:
 #   npx wrangler deploy
 #   npx wrangler secret put PROXY_TOKEN   (paste a long random string)
 # The scraper then needs:
-#   WORKER_PROXY_URL=https://spyur-proxy.<your-subdomain>.workers.dev
+#   WORKER_PROXY_URL=https://spyur-proxy.<your-subdomain>.workers.dev (or custom domain)
 #   WORKER_PROXY_TOKEN=<same random string>
