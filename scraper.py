@@ -197,9 +197,11 @@ class Http:
                 resp.status_code == 200 and self._looks_like_challenge(resp.text)
             ):
                 self._consecutive_challenges += 1
+                body_snippet = (resp.text or "")[:180].replace("\n", " ")
                 print(
                     f"[http] challenge/{resp.status_code} on {url} via {self._transport} "
-                    f"({self._consecutive_challenges}/{MAX_CONSECUTIVE_CHALLENGES})"
+                    f"({self._consecutive_challenges}/{MAX_CONSECUTIVE_CHALLENGES}) "
+                    f"body: {body_snippet!r}"
                 )
                 if self._consecutive_challenges >= MAX_CONSECUTIVE_CHALLENGES:
                     raise ChallengeBlocked(
