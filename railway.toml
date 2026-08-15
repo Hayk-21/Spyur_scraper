@@ -1,2 +1,2 @@
 [deploy]
-startCommand = "python scraper.py"
+startCommand = "python -u scraper.py --service"
