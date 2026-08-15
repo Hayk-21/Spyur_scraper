@@ -2,4 +2,5 @@ requests
 beautifulsoup4
 psycopg2-binary
 cloudscraper
+curl_cffi
 python-dotenv

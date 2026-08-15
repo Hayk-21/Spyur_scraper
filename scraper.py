@@ -78,18 +78,64 @@ _REAL_YPID_MAX = 99999
 
 
 class ChallengeBlocked(RuntimeError):
-    """Cloudflare keeps serving challenge pages - the crawl must stop."""
+    """Cloudflare keeps blocking us - the crawl must stop."""
+
+
+# Residential IPs get plain pages, but datacenter IPs (Railway) receive 403
+# from Cloudflare based on IP reputation + the python-requests TLS fingerprint
+# (cloudscraper shares that fingerprint, so it doesn't help there). Transport
+# escalation ladder:
+#   requests    - fastest, works from residential IPs
+#   cloudscraper- solves JS challenge pages (challenge HTML with HTTP 200)
+#   curl_cffi   - impersonates Chrome's real TLS/JA3 fingerprint; usually the
+#                 one that works from datacenter IPs
+# If even curl_cffi gets 403, the IP itself is blocked - set PROXY_URL (or
+# HTTPS_PROXY) to route through a residential/ISP proxy.
+PROXY_URL = os.getenv("PROXY_URL", "").strip()
+
+_BROWSER_HEADERS = {
+    "User-Agent": _BROWSER_UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.spyur.am/",
+}
 
 
 class Http:
-    """requests first, cloudscraper on the first challenge, abort when even
-    cloudscraper keeps getting challenged."""
+    _ESCALATION = ["requests", "cloudscraper", "curl_cffi"]
 
     def __init__(self):
-        self._session = requests.Session()
-        self._session.headers.update({"User-Agent": _BROWSER_UA})
-        self._using_cloudscraper = False
+        start = os.getenv("START_TRANSPORT", "requests").strip() or "requests"
+        if start not in self._ESCALATION:
+            print(f"[http] unknown START_TRANSPORT {start!r} - using 'requests'")
+            start = "requests"
+        self._transport = start
+        self._session = self._make_session(start)
         self._consecutive_challenges = 0
+
+    @staticmethod
+    def _make_session(kind: str):
+        proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
+        if kind == "requests":
+            s = requests.Session()
+            s.headers.update(_BROWSER_HEADERS)
+            if proxies:
+                s.proxies.update(proxies)
+            return s
+        if kind == "cloudscraper":
+            import cloudscraper
+
+            s = cloudscraper.create_scraper(
+                browser={"browser": "chrome", "platform": "windows", "mobile": False}
+            )
+            if proxies:
+                s.proxies.update(proxies)
+            return s
+        if kind == "curl_cffi":
+            from curl_cffi import requests as curl_requests
+
+            return curl_requests.Session(impersonate="chrome", proxies=proxies)
+        raise ValueError(kind)
 
     @staticmethod
     def _looks_like_challenge(html: str) -> bool:
@@ -101,42 +147,53 @@ class Http:
             or "turnstile" in lowered
         )
 
-    def _switch_to_cloudscraper(self) -> None:
-        import cloudscraper
+    def _escalate(self) -> bool:
+        """Move to the next transport. False when already on the last one."""
+        idx = self._ESCALATION.index(self._transport)
+        for nxt in self._ESCALATION[idx + 1:]:
+            try:
+                self._session = self._make_session(nxt)
+            except Exception as exc:  # noqa: BLE001 - missing optional dep etc.
+                print(f"[http] transport {nxt} unavailable: {type(exc).__name__}: {exc}")
+                continue
+            self._transport = nxt
+            print(f"[http] switched transport to {nxt}")
+            return True
+        return False
 
-        self._session = cloudscraper.create_scraper(
-            browser={"browser": "chrome", "platform": "windows", "mobile": False}
-        )
-        self._using_cloudscraper = True
-        print("[http] challenge detected - switched transport to cloudscraper")
-
-    def get(self, url: str, params: dict | None = None) -> requests.Response:
-        last_exc: Exception | None = None
-        for attempt in range(MAX_RETRIES):
+    def get(self, url: str, params: dict | None = None):
+        network_errors = 0
+        while True:
             try:
                 resp = self._session.get(url, params=params, timeout=REQUEST_TIMEOUT)
-            except requests.RequestException as exc:
-                last_exc = exc
-                time.sleep(min(2 ** attempt * 2, 15))
+            except Exception as exc:  # requests + curl_cffi raise different types
+                network_errors += 1
+                if network_errors >= MAX_RETRIES:
+                    raise
+                time.sleep(min(2 ** network_errors * 2, 15))
                 continue
             if resp.status_code in (403, 429, 503) or (
                 resp.status_code == 200 and self._looks_like_challenge(resp.text)
             ):
                 self._consecutive_challenges += 1
                 print(
-                    f"[http] challenge/{resp.status_code} on {url} "
+                    f"[http] challenge/{resp.status_code} on {url} via {self._transport} "
                     f"({self._consecutive_challenges}/{MAX_CONSECUTIVE_CHALLENGES})"
                 )
-                if not self._using_cloudscraper:
-                    self._switch_to_cloudscraper()
-                elif self._consecutive_challenges >= MAX_CONSECUTIVE_CHALLENGES:
-                    raise ChallengeBlocked(f"blocked after {self._consecutive_challenges} challenges at {url}")
-                time.sleep(10 * min(self._consecutive_challenges, 6))
+                if self._consecutive_challenges >= MAX_CONSECUTIVE_CHALLENGES:
+                    raise ChallengeBlocked(
+                        f"blocked after {self._consecutive_challenges} challenges at {url} "
+                        f"(last transport: {self._transport}"
+                        + ("" if PROXY_URL else "; consider setting PROXY_URL")
+                        + ")"
+                    )
+                if not self._escalate():
+                    # Already on the last transport - back off, then retry it.
+                    time.sleep(min(10 * self._consecutive_challenges, 60))
                 continue
             resp.raise_for_status()
             self._consecutive_challenges = 0
             return resp
-        raise last_exc or RuntimeError(f"failed to fetch {url}")
 
 
 # --------------------------------------------------------------------------- db
