@@ -198,6 +198,7 @@ class Http:
             ):
                 self._consecutive_challenges += 1
                 body_snippet = (resp.text or "")[:180].replace("\n", " ")
+                self._last_challenge = f"HTTP {resp.status_code} body: {body_snippet!r}"
                 print(
                     f"[http] challenge/{resp.status_code} on {url} via {self._transport} "
                     f"({self._consecutive_challenges}/{MAX_CONSECUTIVE_CHALLENGES}) "
@@ -206,9 +207,7 @@ class Http:
                 if self._consecutive_challenges >= MAX_CONSECUTIVE_CHALLENGES:
                     raise ChallengeBlocked(
                         f"blocked after {self._consecutive_challenges} challenges at {url} "
-                        f"(last transport: {self._transport}"
-                        + ("" if PROXY_URL else "; consider setting PROXY_URL")
-                        + ")"
+                        f"via {self._transport}; last response: {self._last_challenge}"
                     )
                 if not self._escalate():
                     # Already on the last transport - back off, then retry it.
