@@ -22,14 +22,19 @@ if (Test-ScraperRunning 'scraper\.py') {
 } else {
     $env:MAX_RETRIES = "5"
     $env:REQUEST_TIMEOUT = "40"
-    $env:MAX_DETAIL_PER_RUN = "40000"
-    $env:MAX_SWEEP_PER_RUN = "70000"
+    # Polite pace: sustained 1.5-3s crawling for two days got even the
+    # residential IP challenge-flagged (2026-08-17). Categories are fully
+    # collected; the details/sweep backfill can afford to be slow.
+    $env:REQUEST_DELAY_MIN = "4"
+    $env:REQUEST_DELAY_MAX = "8"
+    $env:MAX_DETAIL_PER_RUN = "2500"
+    $env:MAX_SWEEP_PER_RUN = "2500"
     Set-Location "$root\Spyur_scraper"
-    for ($i = 1; $i -le 12; $i++) {
+    for ($i = 1; $i -le 3; $i++) {
         python scraper.py --once *>> $spyurLog
         if ($LASTEXITCODE -eq 0) { break }
-        Add-Content $log "[daily] spyur attempt $i failed, retry in 5 min"
-        Start-Sleep -Seconds 300
+        Add-Content $log "[daily] spyur attempt $i failed, retry in 1 h"
+        Start-Sleep -Seconds 3600
     }
 }
 
