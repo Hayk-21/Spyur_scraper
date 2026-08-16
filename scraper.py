@@ -56,6 +56,13 @@ MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 MAX_CONSECUTIVE_CHALLENGES = int(os.getenv("MAX_CONSECUTIVE_CHALLENGES", "8"))
 MAX_LISTING_PAGES_PER_RUN = int(os.getenv("MAX_LISTING_PAGES_PER_RUN", "6000"))
 MAX_DETAIL_PER_RUN = int(os.getenv("MAX_DETAIL_PER_RUN", "1500"))
+# ID sweep: visit company ids the category tree never surfaces (companies
+# without classifiers). Dead ids are remembered in spyur_sweep_checked so
+# they cost one request EVER, not one per week.
+MAX_SWEEP_PER_RUN = int(os.getenv("MAX_SWEEP_PER_RUN", "3000"))
+# 0 = auto: MAX(known company id) + SWEEP_MAX_ID_MARGIN
+SWEEP_MAX_ID = int(os.getenv("SWEEP_MAX_ID", "0"))
+SWEEP_MAX_ID_MARGIN = int(os.getenv("SWEEP_MAX_ID_MARGIN", "5000"))
 SCRAPE_INTERVAL_DAYS = float(os.getenv("SCRAPE_INTERVAL_DAYS", "7"))
 RETRY_CAPPED_HOURS = float(os.getenv("RETRY_CAPPED_HOURS", "24"))
 RETRY_FAILED_HOURS = float(os.getenv("RETRY_FAILED_HOURS", "6"))
@@ -181,7 +188,7 @@ class Http:
         target = url + ("?" + urlencode(params) if params else "")
         return WORKER_PROXY_URL, {"token": WORKER_PROXY_TOKEN, "url": target}
 
-    def get(self, url: str, params: dict | None = None):
+    def get(self, url: str, params: dict | None = None, allow_404: bool = False):
         url, params = self._route(url, params)
         network_errors = 0
         while True:
@@ -193,6 +200,8 @@ class Http:
                     raise
                 time.sleep(min(2 ** network_errors * 2, 15))
                 continue
+            if allow_404 and resp.status_code == 404:
+                return resp
             if resp.status_code in (403, 429, 503) or (
                 resp.status_code == 200 and self._looks_like_challenge(resp.text)
             ):
@@ -249,6 +258,15 @@ def create_tables(cur) -> None:
             parent_path TEXT,
             company_count INTEGER,
             updated_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS spyur_sweep_checked (
+            id BIGINT PRIMARY KEY,
+            found BOOLEAN NOT NULL,
+            checked_at TIMESTAMP NOT NULL DEFAULT now()
         )
         """
     )
@@ -558,6 +576,81 @@ def crawl_details(http: Http, conn, cur, budget: int) -> tuple[int, int]:
     return pages, rows
 
 
+# ---------------------------------------------------------------------- sweep
+
+def _sweep_bound(cur) -> int:
+    if SWEEP_MAX_ID:
+        return SWEEP_MAX_ID
+    cur.execute("SELECT COALESCE(MAX(id), 0) FROM spyur_en")
+    return cur.fetchone()[0] + SWEEP_MAX_ID_MARGIN
+
+
+def crawl_sweep(http: Http, conn, cur, budget: int) -> tuple[int, int, int]:
+    """Visit company ids never seen via the category tree (user request:
+    0..last-id sweep). Companies found are inserted with full details;
+    dead ids are recorded in spyur_sweep_checked and never fetched again.
+    Returns (pages_fetched, rows_added, remaining_backlog)."""
+    bound = _sweep_bound(cur)
+    cur.execute(
+        """
+        SELECT g.id FROM generate_series(1, %s) AS g(id)
+        WHERE NOT EXISTS (SELECT 1 FROM spyur_en e WHERE e.id = g.id)
+          AND NOT EXISTS (SELECT 1 FROM spyur_sweep_checked c WHERE c.id = g.id)
+        ORDER BY g.id
+        LIMIT %s
+        """,
+        (bound, budget + 1),
+    )
+    ids = [r[0] for r in cur.fetchall()]
+    has_more = len(ids) > budget
+    ids = ids[:budget]
+    pages = rows = 0
+    for company_id in ids:
+        resp = http.get(f"{BASE}/en/companies/{company_id}/", allow_404=True)
+        pages += 1
+        data = parse_company_page(resp.text) if resp.status_code == 200 else None
+        if data:
+            cur.execute(
+                """
+                INSERT INTO spyur_en
+                    (id, name, owner, address, phones, categories, founded_year,
+                     scraped_at, detail_scraped_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, now(), now())
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name, owner = EXCLUDED.owner,
+                    address = EXCLUDED.address, phones = EXCLUDED.phones,
+                    categories = EXCLUDED.categories,
+                    founded_year = EXCLUDED.founded_year,
+                    detail_scraped_at = now()
+                """,
+                (company_id, data["name"], data["owner"], data["address"],
+                 data["phones"], data["categories"], data["founded_year"]),
+            )
+            rows += 1
+            print(f"[sweep] {company_id}: FOUND {data['name'][:55]}")
+        cur.execute(
+            "INSERT INTO spyur_sweep_checked (id, found) VALUES (%s, %s) "
+            "ON CONFLICT (id) DO UPDATE SET found = EXCLUDED.found, checked_at = now()",
+            (company_id, bool(data)),
+        )
+        conn.commit()
+        time.sleep(random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX))
+
+    if has_more:
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM generate_series(1, %s) AS g(id)
+            WHERE NOT EXISTS (SELECT 1 FROM spyur_en e WHERE e.id = g.id)
+              AND NOT EXISTS (SELECT 1 FROM spyur_sweep_checked c WHERE c.id = g.id)
+            """,
+            (bound,),
+        )
+        remaining = cur.fetchone()[0]
+    else:
+        remaining = 0
+    return pages, rows, remaining
+
+
 # ------------------------------------------------------------------------ runs
 
 def run_crawl() -> str:
@@ -597,6 +690,8 @@ def run_crawl() -> str:
         rows += l_rows
 
         d_pages = d_rows = 0
+        s_pages = s_rows = 0
+        sweep_backlog = 0
         if completed:
             d_pages, d_rows = crawl_details(http, conn, cur, MAX_DETAIL_PER_RUN)
             pages += d_pages
@@ -605,18 +700,27 @@ def run_crawl() -> str:
         cur.execute("SELECT COUNT(*) FROM spyur_en WHERE detail_scraped_at IS NULL")
         detail_backlog = cur.fetchone()[0]
 
-        if rows == 0:
+        if completed and detail_backlog == 0:
+            s_pages, s_rows, sweep_backlog = crawl_sweep(http, conn, cur, MAX_SWEEP_PER_RUN)
+            pages += s_pages
+            rows += s_rows
+
+        if pages == 0 and rows == 0:
             status = "empty"
-        elif not completed or detail_backlog > 0:
+        elif not completed or detail_backlog > 0 or sweep_backlog > 0:
             status = "capped"
         else:
             status = "ok"
         finish_run(
             cur, run_id, status, pages, rows,
-            f"listings={l_rows} details={d_rows} detail_backlog={detail_backlog}",
+            f"listings={l_rows} details={d_rows} detail_backlog={detail_backlog} "
+            f"sweep_found={s_rows} sweep_backlog={sweep_backlog}",
         )
         conn.commit()
-        print(f"[run] {status}: {pages} pages, {rows} rows, detail backlog {detail_backlog}")
+        print(
+            f"[run] {status}: {pages} pages, {rows} rows, "
+            f"detail backlog {detail_backlog}, sweep backlog {sweep_backlog}"
+        )
         return status
     except ChallengeBlocked as exc:
         conn.rollback()
