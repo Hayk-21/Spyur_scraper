@@ -53,4 +53,10 @@ if (Test-ScraperRunning 'yell\.py') {
     }
 }
 
+# ---- merchant variant merge (same merchant, slightly different names) ----
+Set-Location "$root\API_DramWise"
+$env:ALLOW_PROD_DB_WRITES = "1"
+python scripts\merge_merchant_variants.py --apply *>> $log
+$env:ALLOW_PROD_DB_WRITES = ""
+
 Add-Content $log "[daily] end $(Get-Date -Format s)"
