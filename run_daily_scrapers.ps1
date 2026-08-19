@@ -59,4 +59,10 @@ $env:ALLOW_PROD_DB_WRITES = "1"
 python scripts\merge_merchant_variants.py --apply *>> $log
 $env:ALLOW_PROD_DB_WRITES = ""
 
+# ---- Step 10 observability: daily stats + drift/zero-row alerts into the log ----
+python scripts\classification_stats.py --days 7 *>> $log
+if ($LASTEXITCODE -ne 0) {
+    Add-Content $log "[daily] *** classification_stats raised ALERTS - see above ***"
+}
+
 Add-Content $log "[daily] end $(Get-Date -Format s)"
